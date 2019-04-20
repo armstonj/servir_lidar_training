@@ -1,3 +1,16 @@
-# lidar_training_r
+# SERVIR Lidar Training
 
-R Notebooks for SERVIR lidar training
+## Overview
+
+These presentations and R Notebooks introduce several important considerations in using airborne laser scanning (ALS) data in forest biomass surveys and how these considerations should factor into the design and implementation of data processing workflows. We also introduce upcoming spaceborne lidar mission data products and their potential applications.
+
+
+## R Notebooks
+| Description | R Notebook | Source Code |
+| --------|---------|-------|
+| Exercise 2A | [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_2a.nb.html) | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_2a.Rmd) |
+| Exercise 2B | [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_2b.nb.html) | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_2b.Rmd) |
+| Exercise 3  | [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_3.nb.html)  | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_3.Rmd)  |
+| Exercise 4  | [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_4.nb.html)  | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_4.Rmd)  |
+| Exercise 5  | [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_5.nb.html)  | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_5.Rmd)  |
+
