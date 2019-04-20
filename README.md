@@ -5,6 +5,9 @@
 These presentations and R Notebooks introduce several important considerations in using airborne laser scanning (ALS) data in forest biomass surveys and how these considerations should factor into the design and implementation of data processing workflows. We also introduce upcoming spaceborne lidar mission data products and their potential applications.
 
 
+[Overview of the workflow and associated exercises](https://umdgedi.bitbucket.io/servir_lidar_training/exercises_overview.html "Exercises Overview")
+
+
 ## R Notebooks
 | Description | R Notebook | Source Code |
 | --------|---------|-------|

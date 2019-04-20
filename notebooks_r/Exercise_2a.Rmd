@@ -140,9 +140,9 @@ The last thing we will cover in this exercise is reprojection. This is a familia
 Here we transform the data from "Arc 1960 / UTM zone 37S"" to "WGS 84 / UTM zone 37S", a projection commonly used for satellite remote sensing products in this region.
 ```{r}
 epsg(las) <- 32630
-#new.epsg <- 32737
-#las.utmwgs84 <- lastransform(las, new.epsg)
-#summary(las.utmwgs84)
+new.epsg <- 32737
+las.utmwgs84 <- lastransform(las, new.epsg)
+summary(las.utmwgs84)
 ```
 
 
