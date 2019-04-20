@@ -1,0 +1,615 @@
+---
+title: "R Notebook for SERVIR lidar training: Exercise 4"
+output: html_notebook
+---
+
+# Introduction
+
+This notebook focuses on modeling and mapping forest aboveground biomass with airborne lidar data. We will learn how to build empirical models that predict field estimated biomass as a function of lidar metrics, and then apply those models to create biomass maps. 
+
+Lidar metrics are quantitative descriptions of forest structure calculated from lidar datasets. The most common lidar metric is height (maximum height, CHM), which is known to be highly correlated to aboveground biomass, because tall trees store more carbon than short trees. There are also many other forest structure metrics that are correlated to biomass. 
+
+In this exercise we will explore different statistical methods for linking field and lidar datasets, including bayesian generalized linear models, Ordinary Least Squares Regression, and Random Forest Regression. We will then use each of these methods to make biomass maps from airborne lidar.
+
+These examples use data from the AfriSAR campaign (collected by NASA, in collaboration with the European Space Agency and Gabonese Space Agency). Field data were collected in collaboration with ANPN in Gabon.
+
+We are going to load a dataset that already has lidar data extracted and analyzed over field plots - this step is not something we are covering in the exercises because it is computationally demanding, but the essential process is to match the field plot geometries to the lidar data, extract lidar data over the field plots, and calculate a series of lidar metrics over those plots (typically as height percentiles, percentage canopy cover, etc.)
+
+
+# Getting started
+A always, first we load the R packages that we need for the exercise
+```{r}
+library(plyr)
+library(ggplot2)
+library(brms)
+library(randomForest)
+```
+
+
+# Read the training data
+
+Next we will load the data. We have already spatially aggregated the field data, extracted the coincident ALS (NASA LVIS) data.
+```{r}
+file.dir <- "C:\\Users\\John\\hg\\servir_lidar_training\\servir_lidar_training_accra\\Exercise_4"
+csv.file <- file.path(file.dir, "afrisar_trainingdata_servir.csv")
+
+data <- read.csv(csv.file)
+
+par(mfrow=c(2,3))
+
+hist(data$agbd.ha[data$p.area==10000], col='darkblue', xlab='Field AGBD (Mg/ha)', main='1 ha')
+hist(data$RH100[data$p.area==10000], col='red', xlab='LVIS Height (m)', main='1 ha')
+hist(data$CC[data$p.area==10000]*100, col='darkgreen', xlab='LVIS Cover (%)', main='1 ha')
+
+hist(data$agbd.ha[data$p.area==2500], col='darkblue', xlab='Field AGBD (Mg/ha)', main='0.25 ha')
+hist(data$RH100[data$p.area==2500], col='red', xlab='LVIS Height (m)', main='0.25 ha')
+hist(data$CC[data$p.area==2500]*100, col='darkgreen', xlab='LVIS Cover (%)', main='0.25 ha')
+
+cover.cols <- names(data)[grep("CC_",names(data),fixed=TRUE)]
+str(data[,names(data)[!(names(data) %in% cover.cols)]])
+
+```
+
+We have also extracted the vertical canopy profiles for each plot
+```{r}
+cover.cols <- names(data)[grep("CC_",names(data),fixed=TRUE)]
+cover.profile <- as.data.frame(t(data[,cover.cols]), row.names=FALSE)
+names(cover.profile) <- ifelse(data$p.area == 2500, 
+                               sprintf("%s-%s-%i 0.25ha", data$project, data$plot, data$subplot),
+                               sprintf("%s-%s 1ha", data$project, data$plot))
+cover.profile$height <- 1:nrow(cover.profile)
+
+plot.name <- "gabon_ird-Mabou001 1ha"
+
+par(mfrow=c(1,2))
+plot(cover.profile[,plot.name], cover.profile[,"height"], type="l", col="darkgreen",
+     xlab="Cover Fraction", ylab="Height (m)", main=plot.name, ylim=c(0,70))
+cover.profile.tmp <- cumsum(cover.profile[,plot.name]) / sum(cover.profile[,plot.name])
+plot(cover.profile.tmp, cover.profile[,"height"], type="l", col="darkgreen",
+     xlab="Normalized profile", ylab="Height (m)", main=plot.name, ylim=c(0,70))
+for (q in  c(0.25,0.5,0.75,1.0)) {
+  ii <- max(which(cover.profile.tmp < q))
+  segments(0.05, cover.profile[ii,"height"], cover.profile.tmp[ii], cover.profile[ii,"height"], col="red")
+  text(0.05, cover.profile[ii,"height"]+2, sprintf("RH%i",q*100), col="red", cex=0.75, adj=0)
+}
+#names(cover.profile)
+```
+
+
+# Prepare the data for training the biomass models
+
+You can see that the data is stored at two resolutions - 1 ha, and 0.25 ha. We will separate these into two new datasets so that we can pick one or the other when we're building models - you don't want to have multiple resolution data in a single model object! 
+
+We're also going to only use the predictor variables in builing our models that we have available for mapping - to keep data volumes somewhat lower we are only going to be considering a few predictor metrics - RH100, RH95, RH75, RH50, RH25, and Canopy Cover (CC). These are available as raster stacks that we will eventually be using to apply our biomass models to make maps.
+```{r}
+keep_names <- c('agbd.ha', 'agbd.ha.lower', 'agbd.ha.upper', 'RH100', 'RH95', 'RH75', 'RH50', 'RH25', 'CC')
+data_plots <- data[data$p.area==10000, which(names(data) %in% keep_names)]
+data_subplots <- data[data$p.area==2500, which(names(data) %in% keep_names)]
+
+#now look at these cleaned datasets - these will be used to build empirical models
+str(data_subplots)
+str(data_plots)
+```
+
+# Predictive aboveground biomass model development
+
+There are many many different statistical methods to model biomass as a function of lidar metrics. Some popular methods are using a randomForest package, which is a machine learning algorithm designed to build a model when you have many predictors and very little prior knowledge of the appropriate form of the relationships between height and biomass. Simpler models can also be used, such as Ordinary Least Squares regression, but for this approach it is important to consider appropriate transformations, and minimize multi-collinearity in the dataset.
+
+
+## Ordinary Least Squares (OLS) model
+
+We will provide examples of empirical modeling approaches - one for Ordinary Least Squares regression and one for randomForest regression. We will start with OLS. OLS is one of the most basic and widely used types of empirical model. We'll start using 0.25 ha subplots, and predicting biomass using a single lidar metric, maximum height (RH100).
+
+The lm() function is used to fit OLS models in R. Most of the following code block contains code to make the figures you will see coming out of the code block - the actual model itself is fit on line 99.
+
+### Fit a model with one variable
+
+```{r}
+# Build OLS model using the lm() function. This is a linear model. For more information on it, type ?lm
+ols_model1 <- lm(agbd.ha ~ RH100, data=data_subplots)
+
+# Look at the output from the model - this will give you the model fit statistics
+summary(ols_model1)
+
+# Plot model results in comparison to the relationship between the predictor and response variables
+plot(ols_model1$fitted.values~data_subplots$agbd.ha, ylab='Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)')
+
+# Make a function that manipulates the output model summary so that you can add the model errors to the plot
+model_summary_stats <- function(x){ c(paste('RSq: ', round(summary(x)$r.squared,2), sep=''), paste('RMSE: ', round(sqrt(mean(x$residuals^2)),2), sep=''))}
+
+# Add a 1:1 line
+abline(0,1,lty=2, col='red')
+
+# Plot the summary statistics on the bottom right
+legend('bottomright', legend=model_summary_stats(ols_model1), bty='n')
+
+# Plot the predictor variables on the top left
+legend('topleft', legend=names(ols_model1$model)[-1], title='Predictors', bty='n')
+
+```
+
+
+
+### Fit a model with multiple variables
+
+When using OLS, there are some assumptions made - first is that the relationship between x and y is linear. Secondly, there is an assumption that when you are predicting y from many input variables, there is no collinearity in those input variables. We will look at these assumptions here. 
+
+```{r}
+# Build OLS model using the lm() function. This is a linear model. For more information on it, type ?lm
+ols_model2 <- lm(agbd.ha ~ RH100 + RH50 + CC, data=data_subplots)
+
+# Look at the output from the model - this will give you the model fit statistics
+summary(ols_model2)
+
+# Plot model results in comparison to the relationship between the predictor and response variables
+plot(ols_model2$fitted.values~data_subplots$agbd.ha, ylab='Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)')
+
+# Add a 1:1 line
+abline(0,1,lty=2, col='red')
+
+# Plot the summary statistics on the bottom right
+legend('bottomright', legend=model_summary_stats(ols_model2), bty='n')
+
+# Plot the predictor variables on the top left
+legend('topleft', legend=names(ols_model2$model)[-1], title='Predictors', bty='n')
+```
+
+Notice that there was actually very little improvement in the model accuracy when you added more predictor variables! Typically we recommend not to add predictor variables unless they improve the model performance. However, so far we have only been looking at the model fit performance, and the real test of model accuracy comes from cross validation. We're going to now take the output from the last two models (ols_model1 and ols_model2) and calculated the cross validated summary statistics. 
+
+
+### Cross Validation for Model Assessment
+
+Cross validation is a way of assessing how well a model performs on new data it's introduced to - this is very important when we want to apply a model to new data, for example when we make a biomass map! First, we will make a cross validation function. You don't have to worry too much about the code within this function - you just need to be able to run it. 
+
+Cross validation works by iteratively sampling from your input data, fitting the model on one subset of input data, and predicting on data that wasn't included in the model fit. Don't change anything in this code snippet unless you are an advanced R user.
+
+```{r}
+kfold.cv <- function(model.fit, data, k) {
+    # Create the folds
+    folds <- cut(seq(1,nrow(data)),breaks=k,labels=FALSE)
+    folds <- folds[sample(nrow(data), replace=FALSE)]
+    
+    # Generate predictions
+    yhat <- vector(mode="numeric", length=nrow(data))
+
+    for(i in 1:k){
+        # Get test and training data
+        testindex <- which(folds==i,arr.ind=TRUE)
+        testdata <- data[testindex, ]
+        traindata <- data[-testindex, ]
+        
+        # Fit the model and retain predictions
+        tmp.model.fit <- update(model.fit, data=traindata)
+        yhat[testindex] <- predict(tmp.model.fit, testdata, type="response")
+    }
+    yhat
+}
+```
+
+Now we will apply the cross validation function created above
+```{r}
+cv_predictions_model1 <- kfold.cv(ols_model1, data_subplots, k=nrow(data_subplots))
+cv_predictions_model2 <- kfold.cv(ols_model2, data_subplots, k=nrow(data_subplots))
+
+# Calculate the new model statistics from these cross validated predictions
+# Create two new functions to calculate these accuracy statistics
+rmse_cv <- function(x,y){round(sqrt(mean((x-y)^2)),2)}
+rsq_cv <- function(x,y){round(summary(lm(y~x))$r.squared, 2)}
+
+rmse_cv_model1 <- rmse_cv(data_subplots$agbd.ha, cv_predictions_model1)
+rsq_cv_model1 <- rsq_cv(data_subplots$agbd.ha, cv_predictions_model1)
+
+rmse_cv_model2 <- rmse_cv(data_subplots$agbd.ha, cv_predictions_model2)
+rsq_cv_model2 <- rsq_cv(data_subplots$agbd.ha, cv_predictions_model2)
+
+# Now re-plot the figures from the model 1 and 2, but now we will plot the cross validated statistics on them.
+# par(mfrow=c(1,2)) is a command that sets up multiple plots at the same time - 1,2 means 2 plots in a row, 1,3 is 3 plots, 3,1 would be 3 plots in one column
+par(mfrow=c(1,2))
+
+# Model 1 plot
+plot(ols_model1$fitted.values~data_subplots$agbd.ha, ylab='Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_model1, sep=''), paste('RMSE: ', rmse_cv_model1, sep='')), bty='n')
+legend('topleft', legend=names(ols_model1$model)[-1], title='Predictors', bty='n')
+abline(0,1,lty=2, col='red')
+
+# Model 2 plot
+plot(ols_model2$fitted.values~data_subplots$agbd.ha, ylab='Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_model2, sep=''), paste('RMSE: ', rmse_cv_model2, sep='')), bty='n')
+legend('topleft', legend=names(ols_model2$model)[-1], title='Predictors', bty='n')
+abline(0,1,lty=2, col='red')
+
+
+```
+
+Now we see that the multi-variate model actually has a lower cross validated accuracy than the original model just on height! In this case, we would select the original model. Also notice that the accuracies of both models are lower when we are looking at cross validated statistics than the original statistics - this is also normal!
+
+
+# Considerations for OLS Modeling
+We've talked about the importance of variable selecction and transformation in the lectures, and we touched on multi-collinearity as well. Now we'll go through each of these steps to build a model that we will use to make biomass maps in Exercise 5.
+
+# Variable Selection in OLS approaches
+One of the first questions when building an OLS model is which lidar metrics to use - you don't want to just use all of them because they will be highly correlated to each other - we only want to use the few variables that are highly correlated to biomass, and give unique information that can be used to improve the model output. 
+
+Let's look at a correlation matrix between our potential predictor variables and biomass to help us decide which variables to select.
+```{r}
+cor(data_subplots)
+```
+This correlation matrix show's Pearson's correlation coefficient between each of the variables in the data_subplots file. We can see that agbd.ha (our response variable of AGB in Mg/ha) is very highly correlated to all of the lidar metrics, although less correlated to RH25 and canopy cover. 
+
+There is no perfect rule here, but we generally don't want to include multiple input variables that are correlated with each other with more than a Pearson's coefficient of 0.9, as this can cause issues with multicolinearity. 
+
+Let's build a model using RH100, RH25, and Canopy Cover and compare it to a simpler model using RH100 alone (which has the highest correlation with biomass). 
+
+Any time you want to compare two potential models, you can simply edit the code we write here and make comparisons by re-running that snippet of code. You can change the variables in lines 237 and 238 (OLS1 and OLS2) to compare models with different input variables. 
+
+```{r}
+OLS1 <- lm(agbd.ha ~ RH25 + CC + RH100, data=data_subplots)
+OLS2 <- lm(agbd.ha ~ RH100, data=data_subplots)
+
+cv_predictions_ols1_plot <- kfold.cv(OLS1, data_subplots, k=nrow(data_subplots))
+cv_predictions_ols2_plot <- kfold.cv(OLS2, data_subplots, k=nrow(data_subplots))
+
+# Calculate the new model statistics from these cross validated predictions
+# Create two new functions to calculate these accuracy statistics
+rmse_cv <- function(x,y){round(sqrt(mean((x-y)^2)),2)}
+rsq_cv <- function(x,y){round(summary(lm(y~x))$r.squared, 2)}
+
+rmse_cv_ols1_plot <- rmse_cv(data_subplots$agbd.ha, cv_predictions_ols1_plot)
+rsq_cv_ols1_plot <- rsq_cv(data_subplots$agbd.ha, cv_predictions_ols1_plot)
+
+rmse_cv_ols2_plot <- rmse_cv(data_subplots$agbd.ha, cv_predictions_ols2_plot)
+rsq_cv_ols2_plot <- rsq_cv(data_subplots$agbd.ha, cv_predictions_ols2_plot)
+
+# Now re-plot the figures from the model 1 and 2, but now we will plot the cross validated statistics on them.
+# par(mfrow=c(1,2)) is a command that sets up multiple plots at the same time - 1,2 means 2 plots in a row, 1,3 is 3 plots, 3,1 would be 3 plots in one column
+par(mfrow=c(1,2))
+
+# Model 1 plot
+plot(OLS1$fitted.values~data_subplots$agbd.ha, ylab='CV Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_ols1_plot, sep=''), paste('RMSE: ', rmse_cv_ols1_plot, sep='')), bty='n')
+legend('topleft', legend=names(OLS1$model)[-1], title='Predictors', bty='n')
+abline(0,1,lty=2, col='red')
+
+# Model 2 plot
+plot(OLS2$fitted.values~data_subplots$agbd.ha, ylab='CV Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_ols2_plot, sep=''), paste('RMSE: ', rmse_cv_ols2_plot, sep='')), bty='n')
+legend('topleft', legend=names(OLS2$model)[-1], title='Predictors', bty='n')
+abline(0,1,lty=2, col='red')
+
+```
+
+# Transforming Variables
+We covered the importance of transforming variables for biomass modeling - let's plot up the relationships between our candidate predictor variables and biomass to see if we should make any transformations.
+
+First we should plot up the relationship between biomass and the height metrics
+```{r}
+par(mfrow=c(2,2))
+
+#below we will plot the relationships between Field biomass and the RH metrics
+plot(data_subplots$RH100~data_subplots$agbd.ha)
+abline(lm(data_subplots$RH100~data_subplots$agbd.ha), col='red', lty=2)
+plot(data_subplots$RH75~data_subplots$agbd.ha)
+abline(lm(data_subplots$RH75~data_subplots$agbd.ha), col='red', lty=2)
+plot(data_subplots$RH50~data_subplots$agbd.ha)
+abline(lm(data_subplots$RH50~data_subplots$agbd.ha), col='red', lty=2)
+plot(data_subplots$RH25~data_subplots$agbd.ha)
+abline(lm(data_subplots$RH25~data_subplots$agbd.ha), col='red', lty=2)
+```
+
+Now we will make the same plots, but for the transformed relationships, Square root of biomass vs. RH metrics, and log of biomass vs. RH metrics
+
+```{r}
+agbd_sqrt <- sqrt(data_subplots$agbd.ha)
+par(mfrow=c(2,2))
+plot(data_subplots$RH100~agbd_sqrt, xlab='Square Root AGBD')
+abline(lm(data_subplots$RH100~agbd_sqrt), col='red', lty=2)
+plot(data_subplots$RH75~agbd_sqrt, xlab='Square Root AGBD')
+abline(lm(data_subplots$RH75~agbd_sqrt), col='red', lty=2)
+plot(data_subplots$RH50~agbd_sqrt, xlab='Square Root AGBD')
+abline(lm(data_subplots$RH50~agbd_sqrt), col='red', lty=2)
+plot(data_subplots$RH25~agbd_sqrt, xlab='Square Root AGBD')
+abline(lm(data_subplots$RH25~agbd_sqrt), col='red', lty=2)
+```
+
+Now we'll do the same thing, but for log transforms
+
+```{r}
+#we need to take zeros and set them to some very very small value in order to take the log
+data_subplots$agbd.ha[which(data_subplots$agbd.ha==0)] <- 0.000000001
+agbd_log <- log(data_subplots$agbd.ha)
+par(mfrow=c(2,2))
+plot(data_subplots$RH100~agbd_log, xlab='Log AGBD')
+abline(lm(data_subplots$RH100~agbd_log), col='red', lty=2)
+plot(data_subplots$RH75~agbd_log, xlab='Log AGBD')
+abline(lm(data_subplots$RH75~agbd_log), col='red', lty=2)
+plot(data_subplots$RH50~agbd_log, xlab='Log AGBD')
+abline(lm(data_subplots$RH50~agbd_log), col='red', lty=2)
+plot(data_subplots$RH25~agbd_log, xlab='Log AGBD')
+abline(lm(data_subplots$RH25~agbd_log), col='red', lty=2)
+```
+
+Based on what we see above, a square root transform makes the relationship between RH metrics and biomass more linear. 
+
+Let's now check the relationship between canopy cover and biomass, and the square root and logs
+```{r}
+par(mfrow=c(1,3))
+plot(data_subplots$agbd.ha~data_subplots$CC)
+abline(lm(data_subplots$agbd.ha~data_subplots$CC))
+
+plot(sqrt(data_subplots$agbd.ha)~data_subplots$CC)
+abline(lm(sqrt(data_subplots$agbd.ha)~data_subplots$CC))
+
+plot(log(data_subplots$agbd.ha)~data_subplots$CC)
+abline(lm(log(data_subplots$agbd.ha)~data_subplots$CC))
+
+
+```
+
+Again, we see the square root does the best job! So we will build models of square root biomass. Let's use RH25, RH100, and CC, and compare it with a model that is not transformed. We have copied the code block from line 139 here, so it will look almost identical, we are just changing the transformation for OLS2.
+
+```{r}
+OLS1 <- lm(agbd.ha ~ RH100 + RH25 + CC, data=data_subplots)
+OLS2 <- lm(sqrt(agbd.ha) ~ RH100 + RH25 + CC, data=data_subplots)
+
+cv_predictions_ols1 <- kfold.cv(OLS1, data_subplots, k=nrow(data_subplots))
+cv_predictions_ols2 <- kfold.cv(OLS2, data_subplots, k=nrow(data_subplots))
+
+# Calculate the new model statistics from these cross validated predictions
+# Create two new functions to calculate these accuracy statistics
+rmse_cv <- function(x,y){round(sqrt(mean((x-y)^2)),2)}
+rsq_cv <- function(x,y){round(summary(lm(y~x))$r.squared, 2)}
+
+rmse_cv_ols1 <- rmse_cv(data_subplots$agbd.ha, cv_predictions_ols1)
+rsq_cv_ols1 <- rsq_cv(data_subplots$agbd.ha, cv_predictions_ols1)
+
+rmse_cv_ols2 <- rmse_cv(data_subplots$agbd.ha, cv_predictions_ols2^2)
+rsq_cv_ols2 <- rsq_cv(data_subplots$agbd.ha, cv_predictions_ols2^2)
+
+# Now re-plot the figures from the model 1 and 2, but now we will plot the cross validated statistics on them.
+# par(mfrow=c(1,2)) is a command that sets up multiple plots at the same time - 1,2 means 2 plots in a row, 1,3 is 3 plots, 3,1 would be 3 plots in one column
+par(mfrow=c(1,2))
+
+# Model 1 plot
+plot(OLS1$fitted.values~data_subplots$agbd.ha, ylab='CV Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_ols1, sep=''), paste('RMSE: ', rmse_cv_ols1, sep='')), bty='n')
+legend('topleft', legend=names(OLS1$model)[-1], title='Predictors', bty='n')
+abline(0,1,lty=2, col='red')
+
+# Model 2 plot
+plot(OLS2$fitted.values~sqrt(data_subplots$agbd.ha), ylab='CV Estimated AGB (Mg/ha)', xlab='Square Root Field AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_ols2, sep=''), paste('RMSE: ', rmse_cv_ols2, sep='')), bty='n')
+legend('topleft', legend=names(OLS2$model)[-1], title='Predictors', bty='n')
+abline(0,1,lty=2, col='red')
+```
+
+Now that we are happy with our subplot model, let's call it something more meaningful than OLS2
+
+```{r}
+#define the desired output with a meaningful name. We want to output OLS2, but let's call it something better
+ols_subplot_model <- OLS2
+```
+
+
+### Model fitting and performance assessment at 1 ha
+
+Let's repeat this exercise but for the plot data - maybe at 1 ha we will pick a different model!
+To change this we use the exact same code snippet, but now we are using data_plots instead of data_subplots. We could have just edited the section above and re-run it as well.
+
+```{r}
+OLS1 <- lm(agbd.ha ~ RH100 + RH25+ CC, data=data_plots)
+OLS2 <- lm(sqrt(agbd.ha) ~ RH100 +RH25 + CC, data=data_plots)
+
+cv_predictions_ols1 <- kfold.cv(OLS1, data_plots, k=nrow(data_plots))
+cv_predictions_ols2 <- kfold.cv(OLS2, data_plots, k=nrow(data_plots))
+
+# Calculate the new model statistics from these cross validated predictions
+# Create two new functions to calculate these accuracy statistics
+rmse_cv <- function(x,y){round(sqrt(mean((x-y)^2)),2)}
+rsq_cv <- function(x,y){round(summary(lm(y~x))$r.squared, 2)}
+
+rmse_cv_ols1 <- rmse_cv(data_plots$agbd.ha, cv_predictions_ols1)
+rsq_cv_ols1 <- rsq_cv(data_plots$agbd.ha, cv_predictions_ols1)
+
+rmse_cv_ols2 <- rmse_cv(data_plots$agbd.ha, cv_predictions_ols2^2)
+rsq_cv_ols2 <- rsq_cv(data_plots$agbd.ha, cv_predictions_ols2^2)
+
+# Now re-plot the figures from the model 1 and 2, but now we will plot the cross validated statistics on them.
+# par(mfrow=c(1,2)) is a command that sets up multiple plots at the same time - 1,2 means 2 plots in a row, 1,3 is 3 plots, 3,1 would be 3 plots in one column
+par(mfrow=c(1,2))
+
+# Model 1 plot
+plot(OLS1$fitted.values~data_plots$agbd.ha, ylab='CV Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_ols1, sep=''), paste('RMSE: ', rmse_cv_ols1, sep='')), bty='n')
+legend('topleft', legend=names(OLS1$model)[-1], title='Predictors', bty='n')
+abline(0,1,lty=2, col='red')
+
+# Model 2 plot
+plot(OLS2$fitted.values~sqrt(data_plots$agbd.ha), ylab='CV Estimated AGB (Mg/ha)', xlab='Square Root Field AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_ols2, sep=''), paste('RMSE: ', rmse_cv_ols2, sep='')), bty='n')
+legend('topleft', legend=names(OLS2$model)[-1], title='Predictors', bty='n')
+abline(0,1,lty=2, col='red')
+
+#save the better model to a meaningful name in memory
+ols_plot_model <- OLS2
+```
+
+
+
+## Machine learning (Random Forest) model
+
+Next, we will show the same example but for randomForest, a popular machine learning algorithm, and contrast that to our OLS models.
+
+### Model fitting
+
+```{r}
+# Random Forest example
+rf_model_subplots <- randomForest(agbd.ha ~ RH100 + RH95 + RH75 + RH50 + RH25 + CC, data=data_subplots)
+rf_model_plots <- randomForest(agbd.ha ~ RH100 + RH95 + RH75 + RH50 + RH25 + CC, data=data_plots)
+
+rmse_cv_rf_subplot <- rmse_cv(data_subplots$agbd.ha, rf_model_subplots$predicted)
+rsq_cv_rf_subplot <- rsq_cv(data_subplots$agbd.ha, rf_model_subplots$predicted)
+
+rmse_cv_rf_plot <- rmse_cv(data_plots$agbd.ha, rf_model_plots$predicted)
+rsq_cv_rf_plot <- rsq_cv(data_plots$agbd.ha, rf_model_plots$predicted)
+
+# Plot model results with associated uncertainties
+par(mfrow=c(1,2))
+plot(rf_model_subplots$predicted ~ data_subplots$agbd.ha, ylab='RF Predicted Subplot AGB (Mg/ha)', xlab='Field Estimated Subplot AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_rf_subplot, sep=''), paste('RMSE: ', rmse_cv_rf_subplot, sep='')), bty='n')
+
+abline(0,1,lty=2, col='red')
+plot(rf_model_plots$predicted ~ data_plots$agbd.ha, xlab='Field Estimated Plot AGB (Mg/ha)', ylab='RF Plot Predicted AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_rf_plot, sep=''), paste('RMSE: ', rmse_cv_rf_plot, sep='')), bty='n')
+
+abline(0,1,lty=2, col='red')
+
+```
+
+### Assess model performance
+
+Now we will look at the cross validated accuracies from Random Forest
+
+```{r}
+cv_predictions_rf_model_subplots <- kfold.cv(rf_model_subplots, data_subplots, k=nrow(data_subplots))
+cv_predictions_rf_model_plots <- kfold.cv(rf_model_plots, data_plots, k=nrow(data_plots))
+
+# Calculate the new model statistics from these cross validated predictions
+# Create two new functions to calculate these accuracy statistics
+rmse_cv <- function(x,y){round(sqrt(mean((x-y)^2)),2)}
+rsq_cv <- function(x,y){round(summary(lm(y~x))$r.squared, 2)}
+
+rmse_cv_rf_subplot <- rmse_cv(data_subplots$agbd.ha, cv_predictions_rf_model_subplots)
+rsq_cv_rf_subplot <- rsq_cv(data_subplots$agbd.ha, cv_predictions_rf_model_subplots)
+
+rmse_cv_rf_plot <- rmse_cv(data_plots$agbd.ha, cv_predictions_rf_model_plots)
+rsq_cv_rf_plot <- rsq_cv(data_plots$agbd.ha, cv_predictions_rf_model_plots)
+
+par(mfrow=c(1,2))
+plot(cv_predictions_rf_model_subplots ~ data_subplots$agbd.ha, ylab='CV RF Predicted Subplot AGB (Mg/ha)', xlab='Field Estimated Subplot AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_rf_subplot, sep=''), paste('RMSE: ', rmse_cv_rf_subplot, sep='')), bty='n')
+
+abline(0,1,lty=2, col='red')
+plot(cv_predictions_rf_model_plots ~ data_plots$agbd.ha, ylab='CV RF Predicted Plot AGB (Mg/ha)', xlab='Field Estimated Plot AGB (Mg/ha)')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_rf_plot, sep=''), paste('RMSE: ', rmse_cv_rf_plot, sep='')), bty='n')
+
+abline(0,1,lty=2, col='red')
+```
+
+Now let's plot out the random forest sub-plot model against the OLS subplot model (we are simply copying snippets of code from above)
+```{r}
+# Make a 2 by 2 matrix of plots for the subplot-OLS model, plot-OLS model, subplot-RF model and plot_RF model
+par(mfrow=c(2,2))
+
+cv_predictions_subplot <- kfold.cv(ols_subplot_model, data_subplots, k=nrow(data_subplots))
+cv_predictions_plot <- kfold.cv(ols_plot_model, data_plots, k=nrow(data_plots))
+
+# Calculate the new model statistics from these cross validated predictions
+# Create two new functions to calculate these accuracy statistics
+rmse_cv <- function(x,y){round(sqrt(mean((x-y)^2)),2)}
+rsq_cv <- function(x,y){round(summary(lm(y~x))$r.squared, 2)}
+
+rmse_cv_subplot <- rmse_cv(data_subplots$agbd.ha, cv_predictions_subplot^2)
+rsq_cv_subplot <- rsq_cv(data_subplots$agbd.ha, cv_predictions_subplot^2)
+
+rmse_cv_plot <- rmse_cv(data_plots$agbd.ha, cv_predictions_plot^2)
+rsq_cv_plot <- rsq_cv(data_plots$agbd.ha, cv_predictions_plot^2)
+
+# Now re-plot the figures from the model 1 and 2, but now we will plot the cross validated statistics on them.
+# par(mfrow=c(1,2)) is a command that sets up multiple plots at the same time - 1,2 means 2 plots in a row, 1,3 is 3 plots, 3,1 would be 3 plots in one column
+
+# Model 1 plot
+plot(ols_subplot_model$fitted.values^2~data_subplots$agbd.ha, ylab='CV Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)', main='OLS Subplot')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_subplot, sep=''), paste('RMSE: ', rmse_cv_subplot, sep='')), bty='n')
+abline(0,1,lty=2, col='red')
+
+# Model 2 plot
+plot(ols_plot_model$fitted.values^2~data_plots$agbd.ha, ylab='CV Estimated AGB (Mg/ha)', xlab='Field AGB (Mg/ha)', main='OLS Plot')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_plot, sep=''), paste('RMSE: ', rmse_cv_plot, sep='')), bty='n')
+abline(0,1,lty=2, col='red')
+
+# Now the RF models
+
+plot(cv_predictions_rf_model_subplots ~ data_subplots$agbd.ha, ylab='CV RF Predicted Subplot AGB (Mg/ha)', xlab='Field Estimated Subplot AGB (Mg/ha)', main='RF Subplot')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_rf_subplot, sep=''), paste('RMSE: ', rmse_cv_rf_subplot, sep='')), bty='n')
+
+abline(0,1,lty=2, col='red')
+plot(cv_predictions_rf_model_plots ~ data_plots$agbd.ha, ylab='CV RF Predicted Plot AGB (Mg/ha)', xlab='Field Estimated Plot AGB (Mg/ha)', main='RF Plot')
+legend('bottomright', legend=c(paste('RSq: ', rsq_cv_rf_plot, sep=''), paste('RMSE: ', rmse_cv_rf_plot, sep='')), bty='n')
+
+abline(0,1,lty=2, col='red')
+```
+
+Notice that for these data, the cross validated model assessment indicates that the OLS models are performing better than the random Forest models. We will therefore use the OLS models to make our biomass maps in Exercise 5.
+
+Now we will save our best model objects for the subplot level to an R file called a .Rdata file. This stores R objects, and you can read it into a future session of R using the load() function
+```{r}
+saveRDS(ols_plot_model, file=file.path(file.dir, 'ols_plot_model.rds'))
+saveRDS(ols_subplot_model, file=file.path(file.dir, 'ols_subplot_model.rds'))
+
+```
+
+# Other modelling approaches
+
+There are many other kinds of statistical modeling approaches available in R. You can learn about the different packages by typing '?' followed by the name of the package. Play around trying to fit other models, e.g. Partial Least Squares regression (PLS) to see if you find better results for this study area!
+
+
+## Theoretical model (Bayesian)
+
+For the LVIS AfriSAR Official Airborne Biomass products, we used the theoretical model in a Bayesian generalized non-linear modeling framework. This was the method used for the official AfriSAR LVIs biomass products so we include it here for completeness and to demonstrate a different type of modelling approach (Bayesian) that explicily considers the errors in the training data.
+
+```{r}
+fitBayesModel <- function(data, edge.thres=0, wsg=0.598, wsg.sd=0.16) {
+  training.data <- data[(data$agbd.ha > 0),]
+  training.data$wsg <- wsg
+  training.data$wsg.sd <- wsg.sd
+  priors <- c(prior(normal(-2,1), nlpar=p1),prior(normal(-2,1), nlpar=p2),prior(normal(-2,1), nlpar=p3))
+  glm.fit <- brm(bf(agbd.ha ~ wsg^p1 * RH100^p2 * (CC*RH95)^p3, p1 + p2 + p3 ~ 1, nl=TRUE),  
+              data = training.data, family = Gamma(link="log"),
+              prior = priors, save_dso = TRUE, save_all_pars = TRUE, save_mevars = TRUE)
+  add_loo(glm.fit)
+  r2 <- bayes_R2(glm.fit)
+  list(model=glm.fit,data=training.data,priors=priors,r2=r2)
+}
+
+```
+
+Now we fit the Bayesian model to the 1 ha data
+```{r}
+
+bayes.model.100m <- fitBayesModel(data_plots)
+plot(bayes.model.100m$model, theme=theme_bw())
+
+glm.pred <- predict(bayes.model.100m$model, probs=c(0.05, 0.95))
+plotdata <- cbind(bayes.model.100m$data,data.frame(glm.pred))
+vv1 <- ggplot(data=plotdata,aes_string(x="agbd.ha",y="Estimate"))
+vv1 <- vv1 + geom_errorbar(aes_string(ymin="Q5", ymax="Q95"), colour="grey", alpha=0.75, width=0.05)
+vv1 <- vv1 + geom_errorbarh(aes_string(xmin="agbd.ha.lower",xmax="agbd.ha.upper"), colour="grey", alpha=0.75, width=0.05)
+vv1 <- vv1 + geom_point(size=3, alpha=0.75, color="black")
+vv1 <- vv1 + labs(y="Modelled AGBD",x="Observed AGBD") + theme_bw() + 
+  coord_fixed(xlim=c(0,1500),ylim=c(0,1500)) + geom_abline(intercept=0, slope=1, color="red")
+vv1
+```
+
+Now we fit the Bayesian model to the 0.25 ha data
+```{r}
+bayes.model.50m <- fitBayesModel(data_subplots)
+plot(bayes.model.50m$model, theme=theme_bw())
+
+glm.pred <- predict(bayes.model.50m$model, probs=c(0.05, 0.95))
+plotdata <- cbind(bayes.model.50m$data,data.frame(glm.pred))
+vv1 <- ggplot(data=plotdata,aes_string(x="agbd.ha",y="Estimate"))
+vv1 <- vv1 + geom_errorbar(aes_string(ymin="Q5", ymax="Q95"), colour="grey", alpha=0.75, width=0.05)
+vv1 <- vv1 + geom_errorbarh(aes_string(xmin="agbd.ha.lower",xmax="agbd.ha.upper"), colour="grey", alpha=0.75, width=0.05)
+vv1 <- vv1 + geom_point(size=3, alpha=0.75, color="black")
+vv1 <- vv1 + labs(y="Modelled AGBD",x="Observed AGBD") + theme_bw() + 
+  coord_fixed(xlim=c(0,1500),ylim=c(0,1500)) + geom_abline(intercept=0, slope=1, color="red")
+vv1
+
+```
+
+```{r}
+saveRDS(bayes.model.100m$model, file=file.path(file.dir, 'bayes_plot_model.rds'))
+saveRDS(bayes.model.50m$model, file=file.path(file.dir, 'bayes_subplot_model.rds'))
+
+```
+

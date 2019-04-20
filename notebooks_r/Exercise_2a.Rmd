@@ -1,0 +1,156 @@
+---
+title: "R Notebook for SERVIR lidar training: Exercise 2A"
+output: github_document
+---
+
+## Load the required R packages
+
+R has many many free packages, but you have to install them once, and then load them every time you want to use them. To install new packages, use install.packages(). Anytime you want to know more about what is happening with any of the functions demonstrated in this notebook, simply type ?function into your prompt widow (e.g. ?mean displays help on the function 'mean').
+```{r}
+library(lidR)
+library(mapview)
+
+```
+
+
+## Read in and subset a LAS file
+
+The header stores the metadata. Change the path "las.dir" to where you have stored our example .las file on your local machine. 
+
+```{r}
+las.dir <- "E:\\las_data\\metadata_GHANA_LIDAR_All"
+las.file <- file.path(las.dir, "B2000097.las")
+las <- readLAS(las.file)
+summary(las)
+```
+Notice the error message '108 points with a 'return number' greater than the 'number of returns'. This means on reading the file, lidR performed some basic quality control checks and found an problem. We will now fix this problem. 
+
+But before we fix this issue, notice that this file is 1.9 Gb in memory - it is relatively big for a single .las file, especially considering other memory usage planned for this exercise. To make it easier to process the las file, we can subset the las data in memory (thus reducing the amount of memory needed for a given task).
+
+In this example code, we find the four corners from reading the LAS file's header and then clip out a 1 km rectangle.
+
+```{r}
+xleft <- las@header@PHB$`Min X`
+ytop <- las@header@PHB$`Max Y`
+xright <- xleft + 1000
+ybottom <- ytop - 1000
+las <- lasclipRectangle(las, xleft, ybottom, xright, ytop)
+```
+Again, we see a similar error - that's OK, we will fix it as soon as we have subset the data to a more manageable size. 
+
+Here we will only read in the subset by applying a filter to the readLAS function. See rlas:::lasfilterusage() for the list of filters that can be used - different ones may be required on different projects. In this example we're filtering any returns that have a return value of 0 - lidar returns should be positive (e.g. first return, second return) so a return of 0 indicates some issue with how the data provider processed or exported the data. 
+
+```{r}
+xleft <- las@header@PHB$`Min X`
+ybottom <- las@header@PHB$`Min Y`
+
+# Make a string that has the filter information you want to input to the readLAS function
+filter.str <- paste("-drop_number_of_returns 0 -keep_tile", xleft, ybottom, 1000, sep=" ")
+
+# Read the las file, apply the filter string you defined above
+las <- readLAS(las.file, filter=filter.str)
+
+# Print out a summary of the las data after the filter
+summary(las)
+```
+Now you see that the error we were originally finding is gone! We also only read in the data required, saving memory and increasing processing speed. 
+
+
+## Perform basic QA/QC
+
+Next, we'll perform basic quality control checks on the data using the lascheck function, something you should always do for new LAS files to see if there are any obvious issues that need to be addressed before using the data. Luckily for us lidR makes this easy to do. LAStools also had very good command line tools for this.
+```{r}
+lascheck(las)
+```
+
+Above, we found that there are many duplicate returns in the file. This can happen sometimes when a lidar dataset has not been thoroughly cleaned before sending it our for analysis (this is actually quite common). Let's remove the duplicate points using the lasfilterduplicates function and check again.
+```{r}
+las <- lasfilterduplicates(las)
+lascheck(las)
+```
+
+Notice that the duplicate points have been removed!Everything above looks good, except that the data have not been height normalized. We'll explore normalization in the next excercise, for now we can move forward in processing this file.
+
+Finally let's Visualize the cleaned point cloud!
+```{r}
+plot(las)
+```
+
+Now that we covered how to read las files, filter them, and do basic quality control checks, we will learn a few more common processing techniques for airborne lidar: 1) removing spurious points, 2) tiling and 3) reprojection
+
+
+## Apply a simple method for noise filtering
+
+Spin through your visualized point cloud - you will notice that there are some returns floating above and below the surface. This is quite normal for lidar returns where the recorder has detected a returned beam either above the canopy (perhaps from haze, air pollution or low lying clouds) or below the ground. These returns can be far above the top of the canopy, or far below the ground elevation. It is often necessary to identify and remove these spurious points. 
+
+We can use simple point cloud processing techniques to identify noise points above the canopy and below the ground so that they can be removed before further analysis. To do this, we will make two new variables, p999 and p001. These will be gridded rasters representing the 99.9th and 0.001th quantiles (almost the max and min of a grid cell, but not quite), and calculating the distance in Z between every lidar return in a grid cell (las@data[,Z]) and these values. Line 87 assigns a noise field to any returns that are 5 m greater then the 99.9th percentile height, or more than 2 m lower than the 0.001th percentile height. 
+
+We then use the lasadddata() function to add a noise field (named 'noise') to the lasfile. 
+
+Now we can plot the las data again, but this time color by noise to highlight the spurious points we're talkinga about.
+```{r}
+p999 <- grid_metrics(las, ~quantile(Z, probs=0.999), 10)
+p001 <- grid_metrics(las, ~quantile(Z, probs=0.001), 10)
+las <- lasmergespatial(las, p999, "p999")
+las <- lasmergespatial(las, p001, "p001")
+
+noise <- ((las@data[,Z] - las@data[,p999]) > 5) | ((las@data[,p001] - las@data[,Z]) > 2)
+las <- lasadddata(las, noise, "noise")
+las$p001 <- NULL
+las$p999 <- NULL
+
+plot(las, color=noise)
+```
+
+Now, we want to filter out the noise points using the lasfilter command again, and plot the filtered data. Note, the filters above can be changed based on what a user wants - we used a 10 m grid with thresholds of 5 m above the canopy and 2 m below the canopy. You might want to make those bounds tighter or wider depending on the data and application in question (e.g. if you are mapping power lines above a canopy, they might accidentally be filtered out here and you would want to increase your height threshold above the canopy). We could also make these threshold adaptive, e.g. vary by lidar instrument or survey configuration, or generate a more advanced approach.
+```{r}
+las <- lasfilter(las, noise == FALSE)
+plot(las)
+```
+
+
+## Inspect the composition of a LAS tile
+
+As discussed, lidar data can have high volumes, and it is often impossible to process an entire file all at once in memory. Intsead, lidar data are usually tiled. This also helps to combine overlapping data from multiple flight lines that you want to analyze together. Tiled lidar data are the most common point cloud delivery. It's important to understand they are composed of different flightlines, often with a different survey configuration. We will visualize this issue of flight lines here. 
+
+To see what these commands are doing, first look at the structure of your las object.
+```{r}
+str(las)
+```
+
+Now run the functions laspulse, lasflightline and lasscanline on your data and look at the structure again.
+```{r}
+las <- laspulse(las)
+las <- lasflightline(las)
+#las <- lasscanline(las)
+str(las)
+```
+
+Notice that there are now new fields added to las@data. Next, plot the flightlineID and then a filtered version of las just looking at the first flightline, colored by the scanline ID. This will help you understand how these data were collected. There are three flightlines in this example LAS file (flightlineID's of 1, 2, and 3).
+```{r}
+plot(las, color="flightlineID")
+plot(lasfilter(las, flightlineID ==2), color="Classification")
+```
+
+
+## Reproject a LAS file
+
+The last thing we will cover in this exercise is reprojection. This is a familiar technique across remote sensing, but particularly interesting when lidar projects or flights span multiple EPSG codes. If we want to reproject the LAS data (e.g. for combining point clouds north and south of the equator), we can do so using the lastransform function.
+
+Here we transform the data from "Arc 1960 / UTM zone 37S"" to "WGS 84 / UTM zone 37S", a projection commonly used for satellite remote sensing products in this region.
+```{r}
+epsg(las) <- 32630
+#new.epsg <- 32737
+#las.utmwgs84 <- lastransform(las, new.epsg)
+#summary(las.utmwgs84)
+```
+
+
+## Save the cleaned LAS file
+We now want to save the cleaned and subsetted LAS fle for use in our next exercise.
+```{r}
+output.las.file <- file.path(las.dir, "B2000097_1000m_clean.las")
+writeLAS(las, output.las.file)
+```
+
+This completes our first exercise. If you have extra time, try repeating the steps with a different .las file, or play with filtering different settings to remove noise. You can also look through the structure of the las file and plot the data using the color of a different field you may be interested in. Play around! 

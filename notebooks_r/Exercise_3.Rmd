@@ -1,0 +1,222 @@
+---
+title: "R Notebook for SERVIR lidar training: Exercise 3"
+output: html_notebook
+---
+
+This notebook focuses on estimating biomass in the field using allometric equations. Typically field datasets consist of individual tree measurements of stem diameters (DBH, diameter at breast height), species, and sometimes top height. These data are typically formatted as .csv files or similar. They will also have some geolocation information available, often depending on the nature of the data. 
+
+This exercise will use the BIOMASS package in R to estimate tree and plot-level biomass at the plot (1 ha) and subplot (0.0625 ha) scales.
+
+# Getting started
+
+First we need to load the required libraries. Every time you start a new R session you have to load whatever libraries you will use - there are thousands, so to save memory on your system we only load the ones we need. The BIOMASS package is the library developed specifically for handling forest field data from the tropics, calculating biomass using the Chave equations and propagating error.
+
+```{r}
+library(BIOMASS)
+library(data.table)
+library(knitr)
+library(dplyr)
+```
+
+
+# Read the Gabon data
+Load field data files for Gabon sites (Lope or Mondah forests). These datasets include both tree and plot-level information. 
+
+```{r}
+# Load field data files, print out a summary of the plot file
+field.dir <- 'C:\\Users\\John\\hg\\servir_lidar_training\\servir_lidar_training_accra\\Exercise_3'
+treedata <- read.csv(file.path(field.dir,'Gabon_Mondah_trees.csv'))
+
+# We have to convert DBH measurements to units of cm.
+treedata$d.stem.cm <- treedata$d.stem * 100
+
+# Make sure the data looks correct
+str(treedata)
+
+# Print histograms of height and diameter
+par(mfrow=c(1,3))
+hist(treedata$d.stem.cm, xlab="Stem diameter (m)", main=NULL, col='darkblue')
+hist(treedata$h.t, xlab="Top height (m)", main=NULL, col='darkgreen')
+hist(treedata$wsg, xlab="Wood density (g/m^3)", main=NULL, col="red")
+
+```
+
+# Check the taxonomy and estimate wood density
+
+Next we will check the taxonomic names in the dataset, and clean them up if necessary. This is using a function called 'correctTaxo' and 'getTaxonomy' from the BIOMASS package. We then pull the wood density values associated with each species using the getWoodDensity function. 
+
+```{r}
+Taxo <- correctTaxo(genus = treedata$species)
+treedata$genusCorr <- Taxo$genusCorrected
+treedata$speciesCorr <- Taxo$speciesCorrected
+
+# Retrieving APG III Families and Orders from Genus names
+APG <- getTaxonomy(treedata$genusCorr, findOrder = T)
+treedata$familyAPG <- APG$family
+treedata$orderAPG <- APG$order
+
+# Retrive wood density
+dataWD <- getWoodDensity(
+  genus = treedata$genusCorr,
+  species = treedata$speciesCorr,
+  stand = treedata$Plot.ID
+)
+
+# At species level
+sum(dataWD$levelWD == "species")
+
+# At genus level
+sum(dataWD$levelWD == "genus")
+
+# At plot level
+sum(!dataWD$levelWD %in% c("genus", "species"))
+
+# You can look at the output from this wood density activity using 'str()'
+str(dataWD)
+
+```
+You can compare this wood density table to your original dataset to better understand what it's changing and cleaning up, but we now have a mean and stardard deviation estimate of wood density for each tree in the database, which we need to apply the Chave 2014 equations. Now we have DBH and WD, but we need Height for every tree as well.
+
+
+# Develop the Height:Diameter model
+
+Next we create a model predicting height as a function of stem diameter - ideally this is using all the plots within a strata, not just a single plot. We will build an example of a single file here, but ideally you will have all of the data for all of the files in your area of interest loaded to do this. You could do that all at once by making one large csv file instead of running this notebook for every file separately.
+
+We also use the BIOMASS package to do this step, but you can fit your own models between D:H if you would prefer. The BIOMASS package fits and automatically compares various forms of models - log-log models, weibull models, and michaelis model. We also have the option to weight the models toward the bigger trees - this is a good idea for biomass because the bigger trees are more important than the little trees in terms of how much biomass they store.
+```{r}
+# Fit a series of H:D models using the modelHD() function in the BIOMASS package
+#check if all the data are valid, remove bad data, e.g. heights = 0, non NAs
+valid <- !(is.na(treedata$h.t) | (treedata$h.t == 0))
+result <- modelHD(
+  D = treedata$d.stem.cm[valid],
+  H = treedata$h.t[valid],
+  useWeight = TRUE
+)
+kable(result)
+
+# We can look at the results of the model comparison as well as looking at the plot
+str(result)
+
+# We see that the RSE and bias show the first 3 log models perform similarly, and the weibull and michaelis do not appear to be good fits in this example. Let's pick the simplest model, log 1.
+
+HDmodel <- modelHD(
+  D = treedata$d.stem.cm[valid],
+  H = treedata$h.t[valid],
+  method = "log1",
+  useWeight = TRUE
+)
+
+# Apply the HD model to estimate local heights for every tree
+dataHlocal <- retrieveH(
+  D = treedata$d.stem.cm,
+  model = HDmodel
+)
+
+```
+
+When multiple models have similar performance, we typically recommend selecting the simplest model, in this case log1. 
+
+Now you will have all the variables you need to estimate the biomass per tree - the stem diameters, predicted (or observed) heights, and the wood density. Again, make sure that your units are appropriate for using the BIOMASS packages - cm, m, and g/cm^3.
+
+The line of code in 128-129 sets the heights used for biomass prediction to the measured height when available, and the modeled height when there is no height measurement.
+
+The actual per-tree biomass estimation is on line 132, using the AGBmonteCarlo function, which estimated both the mean and the standard deviation of biomass per tree.
+
+```{r}
+# For AGB estimation, we will use the measured height where available, the modelled where not.
+dataHlocalcombined <- ifelse(is.na(treedata$h.t), dataHlocal$H, treedata$h.t)
+dataHRSElocalcombined <- ifelse(is.na(treedata$h.t), HDmodel$RSE, 1.0)
+```
+
+
+# Estimate aboveground biomass at the tree level
+
+```{r}
+# Run the Monte Carlo simulations
+AGB_simulations <- AGBmonteCarlo(D=treedata$d.stem.cm, WD=dataWD$meanWD, errWD=dataWD$sdWD, H=dataHlocalcombined, errH=dataHRSElocalcombined, Dpropag="chave2004", n=1000, Dlim=5.0)
+
+```
+
+
+Plot histogram of AGB and error per tree
+```{r}
+AGB_tree <- rowMeans(AGB_simulations$AGB_simu, na.rm = TRUE)
+
+tmp <- apply(AGB_simulations$AGB_simu, 1, function(x) {quantile(x, probs=c(0.05,0.95))})
+tree_ci <- as.data.frame( t(tmp) )
+tree_sd <- apply(AGB_simulations$AGB_simu, 1, sd)
+
+par(mfrow=c(1,2))
+hist(AGB_tree * 1000, breaks=seq(0,100000,by=25), xlim=c(0,2000), xlab="AGB per tree (Kg)", main=NULL, col="darkgreen")
+hist(tree_sd * 1000, breaks=seq(0,100000,by=25), xlim=c(0,2000), xlab="AGB error per tree (Kg)", main=NULL, col="red")
+treedata$AGB <- AGB_tree
+```
+
+
+# Estimate aboveground biomass at the plot level
+
+Now calculate plot aboveground biomass density in Mg/ha
+```{r}
+AGB_sim_plot <- summaryByPlot(AGB_simulations, treedata$plot)
+plot_area <- aggregate(treedata[,"p.area"], list(plot=treedata$plot), function(x) {x[1]})
+mean_AGB <- AGB_sim_plot$AGB / plot_area$x * 10000
+min_AGB <- AGB_sim_plot$Cred_2.5 / plot_area$x * 10000 
+max_AGB <- AGB_sim_plot$Cred_97.5 / plot_area$x * 10000
+
+#plot up the biomass value estimated per plot, with its error
+plot(mean_AGB, pch=10, xlab ='', ylab = 'AGB Mg/ha', ylim = c(0,max(max_AGB)), las=1, cex.lab=1.3, axes=FALSE)
+segments(seq(nrow(AGB_sim_plot)), min_AGB, seq(nrow(AGB_sim_plot)), max_AGB, col = "red")
+axis(1,at=seq(nrow(AGB_sim_plot)),labels=plot_area$plot, las=2)
+axis(2,at=seq(0,400,50),labels=seq(0,400,50))
+
+plotdata <- cbind(mean_AGB, min_AGB, max_AGB, AGB_sim_plot$plot)
+names(plotdata) <- c('AGBD', 'AGBD 5% CI', 'AGBD 95% CI', 'Plot (1 ha)')
+
+```
+Here you can see that the error bars in red (which are the credible intervals for the estimate of mean biomass propagating errors in measurement, H:D model, and allometric model) are larger for the higher biomass plots. This is what we expect - errors increase as biomass density increases.
+
+
+# Estimate biomass at the subplot level
+
+```{r}
+# The BIOMASS package can only process plots with > 1 tree, so we need to identify the subplots with only one tree
+treedata$subplot.id <- paste(treedata$plot,treedata$subplot,sep="-")
+invalid.plots <- c("NASA01-3","NASA01-9","NASA09-4","NASA11-15","NASA11-3","NASA21-3","NASA21-7")
+ii <- !(treedata$subplot.id %in% invalid.plots)
+
+# Calculate the subplot level AGB estimates
+subplot_area <- 625 # 25m x 25m
+AGB_sim_plot <- summaryByPlot(AGB_simulations$AGB_simu[ii,], treedata$subplot.id[ii])
+mean_AGB <- AGB_sim_plot$AGB / subplot_area * 10000
+min_AGB <- AGB_sim_plot$Cred_2.5 / subplot_area * 10000 
+max_AGB <- AGB_sim_plot$Cred_97.5 / subplot_area * 10000
+
+#plot up the biomass value estimated per plot, with its error
+plot(mean_AGB, pch=10, xlab ='Subplot ID', ylab = 'AGB Mg/ha', ylim = c(0,max(max_AGB)), las=1, cex.lab=1.3)
+segments(seq(nrow(AGB_sim_plot)), min_AGB, seq(nrow(AGB_sim_plot)), max_AGB, col = "red")
+
+subplotdata <- cbind(mean_AGB, min_AGB, max_AGB, AGB_sim_plot$subplot.id)
+names(subplotdata) <- c('AGBD', 'AGBD 5% CI', 'AGBD 95% CI', 'Subplot (1 ha)')
+
+
+```
+
+
+# Write the results to file
+
+Now we will output two new csv files - one that matches your input file but has updated species info and the AGB per tree and associated standard deviaiton added, and a second one that simply has the plot estimtae and credible intervals for the plot.
+
+```{r}
+# Set output filename for new tree file
+tree_file_out <- paste(field.dir, 'gabon_afrisar_tree_example_output.csv', sep='')
+write.csv(treedata, file=tree_file_out)
+
+# Set output filename for the plot AGB summary files
+plot_file_out <-paste(field.dir, 'gabon_afrisar_tree_example_output_plot.csv', sep='')
+write.csv(plotdata, file=plot_file_out)
+subplot_file_out <-paste(field.dir, 'gabon_afrisar_tree_example_output_subplot.csv', sep='')
+write.csv(subplotdata, file=subplot_file_out)
+```
+
+# Next step
+If there is time, let's estimate AGB and uncertianty at the subplot level

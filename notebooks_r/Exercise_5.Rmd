@@ -1,0 +1,168 @@
+---
+title: "R Notebook for SERVIR lidar training: Exercise 5"
+output: html_notebook
+---
+
+# Gridding of aboveground biomass estimates using R
+
+This notebook focuses on mapping forest aboveground biomass with airborne lidar data. We will learn how to use the empirical models that predict field estimated biomass as a function of lidar metrics (created in Exercise 4) to predict aboveground biomass. The lidar height and cover metric rasters we have been learning to create using lidar point clouds will be used create maps of these predictions.
+
+
+# Getting started
+
+As always, first we load the R packages that we need for the exercise.
+
+```{r}
+library(randomForest)
+library(raster)
+```
+
+
+# Read the predictor data (rasters)
+
+Next we will load the raster data. We have already created these over the Lope and Mondah study sites using ALS (NASA LVIS) data. These layers were created using the same type of methods and processing we have covered in earlier exercises on airborne lidar processing workflows.
+
+The inputs are VRT files, just as we produced when generating height and cover products from ALS data in Exercise 2B.
+
+```{r}
+file.dir <- "C:\\Users\\John\\hg\\servir_lidar_training\\servir_lidar_training_accra\\Exercise_5"
+rh100.file <- file.path(file.dir, "lvis_rasters", "ilvis2_ga2016_lope_rh100_snapped_r02500cm.vrt")
+rh25.file <- file.path(file.dir, "lvis_rasters", "ilvis2_ga2016_lope_rh25_snapped_r02500cm.vrt")
+cc.file <- file.path(file.dir, "lvis_rasters", "ilvis2_ga2016_lope_ccover_snapped_r02500cm.vrt")
+
+# Convert to carbon?
+carbon <- TRUE
+
+rh100.grid <- raster(rh100.file)
+rh100.grid
+summary(rh100.grid)
+plot(rh100.grid, main="RH100 (0.0625 ha)")
+
+rh25.grid <- raster(rh25.file)
+rh25.grid
+cc.grid <- raster(cc.file)
+cc.grid
+```
+
+
+## Create a raster stack of the predictor variables
+```{r}
+predictor.stack.25m <- stack(rh100.grid,rh25.grid,cc.grid)
+```
+
+
+# Single variable regression estimator for 1 ha
+
+## Reduce the spatial resolution from 25m to 100m
+
+The original lidar data were at a 25 m resolution, but we want to make maps at both 50 m and 100 m, so here we use the aggregate() function to make a 100 m grid.
+
+```{r}
+predictor.stack.100m <- aggregate(predictor.stack.25m, fact=4, fun=mean, na.rm=TRUE)
+plot(predictor.stack.100m, main=c("RH100 (1 ha)","RH25 (1 ha)", "Canopy Cover (1 ha)"),col=heat.colors(50))
+```
+
+
+## Load the regression estimator
+We will now load in the plot level (100 m) model file we created at the end of Exercise 4. 
+
+```{r}
+model.file <- file.path(file.dir, "ols_plot_model.rds")
+ols_plot_model <- readRDS(model.file)
+```
+
+## Predict aboveground biomass for each pixel
+
+The models we have developed have a SQRT transformation of the response. 
+First we need to define a custom function so we backtransform the prediction to the natural scale
+Note that we have to perform a bias correction on the backtransform
+```{r}
+# As done in the BIOMASS R package, the biomass to carbon ratio is calculated from Thomas and Martin (2012) forests data stored in the DRYAD database (tropical angiosperm stems carbon content)
+getcarbon <- function(agb) {
+  n <- length(agb)
+  c.factor <- rnorm(n, mean=47.13, sd=2.06) / 100
+  agc <- agb * c.factor
+  agc
+}
+
+# Bias correction following backtransformation is from Gregoire et al. (2008)
+# Regression Estimation Following the Square-Root Transformation of the Response
+# Forest Science 54(6):597-606
+predfun <- function(model, data, carbon=FALSE) {
+  v <- predict(model, data)
+  bias.cor <- summary(model)$sigma
+  p <- as.vector(v)^2 + bias.cor^2
+  if ( carbon == TRUE) { 
+    getcarbon(p)
+  } else {
+    p
+  }
+}
+
+```
+
+Now we can predict AGBD for each pixel
+```{r}
+# Make sure the predictor name is correct (it needs to match up with the model variable names)
+names(predictor.stack.100m) <- c("RH100", "RH25", "CC")
+
+# Predict aboveground biomass
+output.file <- file.path(file.dir, "ols_plot_model_lope.tif")
+agb.grid.100m <- predict(predictor.stack.100m, ols_plot_model, fun=predfun, filename=output.file, overwrite=TRUE, carbon=carbon)
+
+# Vizualize the results
+summary(agb.grid.100m)
+if (carbon) {
+  plot(agb.grid.100m, main="Aboveground Carbon (Mg/ha) 1 ha")
+} else {
+  plot(agb.grid.100m, main="Aboveground Biomass (Mg/ha) 1 ha")
+}
+
+```
+
+
+# Multiple variable regression estimator for 0.25 ha
+
+## Reduce the spatial resolution of the predictor stack from 25m to 50m
+
+```{r}
+predictor.stack.50m <- aggregate(predictor.stack.25m, fact=2, fun=mean, na.rm=TRUE)
+plot(predictor.stack.50m, main=c("RH100 (0.25 ha)","RH25 (0.25 ha)", "Canopy Cover (0.25 ha)"))
+```
+
+
+## Load the regression estimator
+Load the subplot-level model you created in Exercise 4
+
+```{r}
+model.file <- file.path(file.dir, "ols_subplot_model.rds")
+ols_subplot_model <- readRDS(model.file)
+```
+
+## Predict aboveground biomass for each pixel
+
+Now to predict AGB as done for the 1 ha example
+```{r}
+# Make sure the predictor names are correct (it needs to match up with the model variable names)
+names(predictor.stack.50m) <- c("RH100","RH25","CC")
+
+# Predict aboveground biomass
+output.file <- file.path(file.dir, "ols_subplot_model_lope.tif")
+agb.grid.50m <- predict(predictor.stack.50m, ols_subplot_model, fun=predfun, filename=output.file, overwrite=TRUE)
+
+# Visualize the results
+summary(agb.grid.50m)
+if (carbon) {
+  plot(agb.grid.50m, main="Aboveground Carbon (Mg/ha) 0.25 ha")
+} else {
+  plot(agb.grid.50m, main="Aboveground Biomass (Mg/ha) 0.25 ha")
+}
+```
+
+
+# Next steps
+
+Open the output .tif files in QGIS or ArcGIS and display over basemaps (if you have an internet connection).
+We can now run through this process a second time for the Mondah study area.
+
+

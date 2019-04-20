@@ -1,0 +1,314 @@
+---
+title: 'R Notebook for SERVIR lidar training: Exercise 2B'
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+## Get started
+
+### Load the required R packages
+
+R has many many free packages, but you have to install them once, and then load them every time you want to use them. To install new packages, use install.packages(). Anytime you want to know more about what is happening with any of the functions demonstrated in this notebook, simply type ?function into your prompt widow (e.g. ?mean displays help on the function 'mean').
+```{r}
+library(lidR)
+library(mapview)
+library(raster)
+```
+
+### Read the LAS file created in the last session
+```{r}
+las.dir <- "E:\\las_data\\metadata_GHANA_LIDAR_All"
+las.file <- file.path(las.dir, "B2000097_1000m_clean.las")
+las <- readLAS(las.file)
+str(las)
+```
+
+Now run the functions laspulse, lasflightline and lasscanline on your data and look at the structure again. We do this because these fields are not retained in the LAS 1.2 format.
+```{r}
+las <- laspulse(las)
+las <- lasflightline(las)
+#las <- lasscanline(las)
+str(las)
+```
+
+## Generate descriptive statistics
+
+Point density is an important consideration in biomass surveys using airborne lidar. For lidar return densities below 4 m^2, bias in height estimates has been shown to result in prediction errors of 80-125 Mg ha^???1 aboveground biomass.
+Leitold, V., Keller, M., Morton, D.C. et al. Carbon Balance Manage (2015) 10: 3. https://doi.org/10.1186/s13021-015-0013-x
+Point density is sensitive to vegetation structure, so pulse density is gererally a better indicator of sampling density.
+
+```{r}
+density.grid <- grid_density(las, res=1)
+plot(density.grid, col=heat.colors(50))
+```
+
+
+We can write the grid object to file for analysis and visualisation outside R (e.g. in QGIS). The command below can be edited to write a file to disk for any grid generated in this exercise.
+```{r}
+grid.file <- file.path(las.dir, "B2000097_1000m_clean_density.tif")
+writeRaster(density.grid, filename=grid.file, format="GTiff", overwrite=TRUE)
+```
+
+
+## Calculate height above ground for each return
+Normalize the elevations to height above ground using linear interpolation. Other interploations methods are possible, but we will cover this later when creating a DEM. A DEM is not subtracted from point elevations, instead each point is interpolated, which is the same approach that Pylidar uses. This way there is no added error due to inaccuracies in the discretization of ground elevations.
+```{r}
+las_height <- lasnormalize(las, tin())
+```
+
+We can now visualize the normalised point cloud. 
+```{r}
+str(las_height)
+plot(las_height, col=height.colors(50), color=Z)
+```
+
+
+## Generate gridded products
+Now we will generate gridded products that are often used in forest research, such as a terrain raster (DEM), and a canopy height model (CHM) 
+
+### Digital Elevation Model (DEM)
+To make a DEM, we will use an interpolation method, which essentially translates the 3D data from the lidar point cloud and turns it into a 2D raster. 
+
+lidR provides access to three methods of interpolation:
+1. Linear interpolation. This is based on a Delaunay triangulation, which performs a linear interpolation within each triangle.
+2. Inverse distance weighted (IDW) interploation. This method is sensitive to spurious ground points caused by misclassification.
+3. Kringing. This method requires specification of a variogram so is more difficult to use.
+Each method uses k-nearest neighbour (KNN) to efficiently extract the nearest k neighbours for use in interpolation.
+
+```{r}
+interp.method <- "IDW" # Interpolation algorithm
+resolution <- 1 # Spatial resolution of the output
+
+if ( interp.method == "Linear") {
+  dem.grid <- grid_terrain(las, res=resolution, algorithm=tin(), keep_lowest=FALSE)
+}
+  
+if ( interp.method == "IDW") {
+  dem.grid <- grid_terrain(las, res=resolution, algorithm=knnidw(k=6L, p=2), keep_lowest=FALSE)
+}
+
+if ( interp.method == "Kriging") {
+  dem.grid <- grid_terrain(las, res=resolution, algorithm=kriging(k=10L), keep_lowest=FALSE)
+}
+  
+# Plot the result
+plot(dem.grid, col=terrain.colors(50))
+plot_dtm3d(dem.grid)
+```
+
+```{r}
+grid.file <- file.path(las.dir, "B2000097_1000m_clean_dem.tif")
+writeRaster(dem.grid, filename=grid.file, format="GTiff", overwrite=TRUE)
+```
+
+If you have time, change the interp.method <- 'Linear' to 'IDW' and 'Kriging', and plot the different results. This will show you variations in the DEM that are caused by the interpolation method!
+
+### Surface elevation model (DSM)
+Now we will create a raster of the DSM, which will include both terrain and canopy points. We will create a canopy surface model grid at 1m spatial resolution, which is set in the grid_metrics function as the third variable. If you wanted to do the same thing at 2 m or 5 m change this to dsm.grid <- grid_metrics(las_height, max(Z), 2) or dsm.grid <- grid_metrics(las_height, max(Z), 5). Plot the result to see how this resolution makes a difference.
+
+```{r}
+dsm.grid <- grid_metrics(las_height, max(Zref), 1)
+colors <- height.colors(50)
+plot(dsm.grid, col=colors)
+plot_dtm3d(dsm.grid)
+```
+
+### Canopy Height Model (CHM)
+We calculate the canopy height model directly as the maximum of each grid cell (similar to the DSM approach above that used the Zref, now we are using just the heights above ground, Z)
+
+```{r}
+chm.grid <- grid_metrics(las_height, max(Z), 1)
+colors <- height.colors(50)
+plot(chm.grid, col=colors)
+plot_dtm3d(chm.grid)
+```
+
+Many applications require a smoother canopy surface (i.e. filling gaps within crowns). There are many ways of performing pit-filling, but we will test the same method used by LAStools - the Khosravipour et al. pitfree algorithm. Be warned - this is computationally intensive... consider skipping this step.
+
+```{r}
+# Khosravipour et al. pitfree algorithm
+pitfree.chm.grid <- grid_canopy(las_height, res=0.5, pitfree(c(0,2,5,10,15), c(0, 1.5)))
+plot(pitfree.chm.grid, col=height.colors(50))
+```
+
+```{r}
+grid.file <- file.path(las.dir, "B2000097_1000m_clean_chm.tif")
+writeRaster(chm.grid, filename=grid.file, format="GTiff", overwrite=TRUE)
+```
+
+
+# Batch processing of large datasets
+Now that we have practiced making useful raster files for a single .las tile, we will learn how to batch process such data so that you can process an entire dataset iteratively (one tile at a time). This will take some time to process, but these scripts can be used and edited so that you can automatically process new lidar data in the future. 
+
+## Build a catalog of all the LAS files
+
+Building a LAS catalog is a way of organizing the processing many LAS files and tiles so that you can do batch processing. lidR largely handles this internally and it relies on just a few steps (as documented by the lidR help):
+1. Define chunks. A chunk is an arbitrarily-defined region of interest (ROI) of the catalog. Altogether, the chunks are a wall-to-wall set of ROI's that encompass the whole dataset.
+2. Loop over each chunk (in parallel or not).
+3. For each chunk, load the points inside the ROI into R, run some R functions, return the expected output.
+4. Merge the outputs of the different chunks once they are all processed to build a continuous (wall-to-wall) output.
+
+
+Here we will undertake the following steps using LAS data provided by the Ghana Forestry Commission:
+1. Build a LAScatalog object
+2. Validate the lAScatalog object
+3. Display the result
+
+```{r}
+project.dir <- "D:\\ghana_las"
+las.file <- file.path(project.dir)
+ctg <- catalog(las.file)
+lascheck(ctg)
+plot(ctg)
+```
+
+We need to take the methods applied in Exercise 2B and apply them over larger areas. This can be a challenging task due to the memory and data storage requirements of large lidar datasets. lidR has setup a very nice system (LAS catalog) to enable operational use of user-defined functions in the processing of LAS file collections to produce wall-to-wall maps.
+
+The functions below can be adapted to suit your specific processing needs, but they are essentially the same functions we have gone over in the last few exercises - now we will just be running them on all the files at the same time. Just click the green errors, don't worry about changing any of these functions at this point unless you are an advanced R user.
+
+## Create cleaned point clouds
+```{r}
+lasprocess = function(las, ...)
+{
+  UseMethod("lasprocess", las)
+}
+```
+
+
+This function removes the noise as in Exercise 2b - feel free to change if you want a different noise threshold above or below the canopy.
+```{r}
+lasfilternoise = function(las)
+{
+  p999 <- grid_metrics(las, ~quantile(Z, probs=0.999), 10)
+  p001 <- grid_metrics(las, ~quantile(Z, probs=0.001), 10)
+  
+  las <- lasmergespatial(las, p999, "p999")
+  las <- lasmergespatial(las, p001, "p001")
+  
+  las <- lasfilter(las,
+      !(((las@data[,Z] - las@data[,p999]) > 5) | 
+      ((las@data[,p001] - las@data[,Z]) > 2))
+  )
+  
+  las$p001 <- NULL
+  las$p999 <- NULL
+  
+  return(las)
+}
+```
+
+
+The function is automatically fed with LAScluster objects. Here the input 'las' will a LAScluster. This will go through all the steps annotated in green below - essentially processing many different steps all at once, per file.
+```{r}
+lasprocess.LAScluster = function(las, epsgcode)
+{
+  las <- readLAS(las)                          # Read the LAScluster
+  if (is.empty(las)) return(NULL)              # Exit early (see documentation)
+  
+  epsg(las) <- epsgcode                        # Set the projection
+  
+  las <- lasfilterduplicates(las)              # Filter duplicates
+  las <- lasfilternoise(las)                   # Filter the noise
+  
+  las <- lasnormalize(las, tin())              # Generate height above ground estimates
+  
+  las <- lasfilter(las, buffer == 0)           # Remove the buffer
+  return(las)                                  # Return the filtered point cloud
+}
+```
+
+
+```{r}
+lasprocess.LAScatalog = function(las, epsgcode)
+{
+   # Do not respect the select argument
+   opt_select(las) <-  "*"
+   
+   # Add this option to throw an error if no output template is provided
+   options <- list(need_output_file = TRUE)
+   
+   output  <- catalog_apply(las, lasprocess, epsgcode=epsgcode, .options = options)
+   output  <- unlist(output)
+   
+   # Build a LAScatalog from the written las files
+   output  <- catalog(output)
+   return(output)
+}
+
+```
+
+Run the process we have setup over all the LAS data, not just the subset we have been testing on. Be warned this may take time to complete, depending on the computing resources available to you. If you have more than one core available on your computer, you can set opt_cores to a value > 1.
+```{r}
+opt_filter(ctg)       <- "-drop_number_of_returns 0"
+opt_chunk_buffer(ctg) <- 10
+opt_chunk_size(ctg)   <- 625
+opt_cores(ctg)        <- 1
+opt_output_files(ctg) <- paste(project.dir, "tiles", "{XLEFT}_{YTOP}_height", sep="\\")
+
+plot(ctg,chunk=TRUE)
+
+```
+
+Once you have checked the tiling and overlap, run the process.
+```{r}
+ctg_processed <- lasprocess(ctg, 32630)
+lidR:::catalog_laxindex(ctg_processed)
+
+```
+
+
+## Set some common options for the processing
+```{r}
+opt_cores(ctg_processed) <- 1
+opt_chunk_buffer(ctg_processed) <- 10
+opt_chunk_size(ctg_processed)   <- 0
+
+lascheck(ctg_processed)
+plot(ctg_processed, map=TRUE)
+
+```
+
+
+
+
+## Create a Canopy Height Model (CHM) from the cleaned point clouds
+The output rasters will be written to disk. The list of written files is returned or, in this specific case, a virtual raster mosaic (VRT file). This file can be opened in ArcGIS or QGIS. We're using the normalised heights to caclculate this, so we just need the maximum Z value.
+```{r}
+opt_output_files(ctg_processed) <- file.path(project.dir, "chm", "{ORIGINALFILENAME}_chm")
+chm <- grid_metrics(ctg_processed, max(Z), res=1)
+plot(chm)
+#plot_dtm3d(chm)
+```
+
+```{r}
+plot(chm,zlim=c(0,NA))
+```
+
+
+
+## Create a cover and height percentile product from the cleaned point clouds
+```{r}
+opt_output_files(ctg_processed) <- file.path(project.dir, "coverheight", "{ORIGINALFILENAME}_metrics")
+
+# A simple function to calculate cover and percentile height using weighted returns (Armston et al., 2013)
+# h = height threshold for canopy cover calculation
+# q = height percentile for relative height calculation
+getMetrics <- function(z,r,n,h,q)
+{
+  w <- r / n
+  metrics <- list(
+     cover <- sum(w[z > h]) / sum(w),
+     height <- quantile(z, q)
+  )
+  return(metrics)
+}
+
+metrics <- grid_metrics(ctg_processed, 
+             getMetrics(Z,ReturnNumber,NumberOfReturns,0.5,0.95), 
+             res=5)
+plot(metrics, main=c("Cover (z>0.5m)","95th Percentile"), zlim=c(0,NA))
+```
+
+Check that there is a folder called 'metrics' that also has a series of files in it, one per tile.
+
