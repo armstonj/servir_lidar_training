@@ -2,6 +2,7 @@
 
 ## Overview
 These presentations and R Notebooks were developed to:
+
 1.  Teach basic principles of lidar remote sensing, with a focus on airborne laser scanning (ALS)
 2.  Outline important considerations in using airborne laser scanning (ALS) data for forest biomass surveys
 3.  Demonstrate how these considerations should factor into the design and implementation of data processing workflows
