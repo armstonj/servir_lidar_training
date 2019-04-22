@@ -25,7 +25,7 @@ The presentation are intended to provide background and examples for each of the
 
 
 ## R Notebooks
-The exercises are provided in HTML and R Notebook format. Exercises 2A and 2B can be used with both the Kenya and Ghana pilot area ALS datasets, but users need to following instructions with the notebook to change paths where applicable.
+The exercises are provided in HTML and R Notebook format. Exercises 2A and 2B can be used with both the Kenya and Ghana pilot area ALS datasets, but users need to follow instructions within the R Notebook to change paths to input files where applicable.
 
 | Description | R Notebook | Source Code |
 | --------|---------|-------|
@@ -33,7 +33,7 @@ The exercises are provided in HTML and R Notebook format. Exercises 2A and 2B ca
 | Exercise 2B: ALS point clouds to basic canopy image products| [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_2b.nb.html) | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_2b.Rmd) |
 | Exercise 3: Processing tree survey data to aboveground biomass | [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_3.nb.html) | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_3.Rmd) |
 | Exercise 4: Aboveground biomass modelling from ALS data | [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_4.nb.html) | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_4.Rmd) |
-| Exercise 5: Generating aboveground biomass maps | [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_5.nb.html) | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_5.Rmd) |
+| Exercise 5: Generating aboveground biomass and carbon maps | [R Notebook (HTML)](https://umdgedi.bitbucket.io/servir_lidar_training/Exercise_5.nb.html) | [R Markdown (Rmd)](https://bitbucket.org/umdgedi/servir_lidar_training/src/default/notebooks_r/Exercise_5.Rmd) |
 
 
 ## Datasets
@@ -50,5 +50,7 @@ See the table below to identify which files need to be downloaded and then unzip
 
 
 ## Contacts
+
 John Armston (armston@umd.edu)
+
 Laura Duncanson (lduncans@umd.edu)
