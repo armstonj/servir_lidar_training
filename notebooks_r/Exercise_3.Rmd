@@ -24,7 +24,7 @@ Load field data files for Gabon sites (Lope or Mondah forests). These datasets i
 
 ```{r}
 # Load field data files, print out a summary of the plot file
-field.dir <- 'C:\\Users\\John\\hg\\servir_lidar_training\\servir_lidar_training_accra\\Exercise_3'
+field.dir <- 'G:\\Team Drives\\SERVIR Lidar Training\\data\\lvis'
 treedata <- read.csv(file.path(field.dir,'Gabon_Mondah_trees.csv'))
 
 # We have to convert DBH measurements to units of cm.
@@ -217,6 +217,3 @@ write.csv(plotdata, file=plot_file_out)
 subplot_file_out <-paste(field.dir, 'gabon_afrisar_tree_example_output_subplot.csv', sep='')
 write.csv(subplotdata, file=subplot_file_out)
 ```
-
-# Next step
-If there is time, let's estimate AGB and uncertianty at the subplot level

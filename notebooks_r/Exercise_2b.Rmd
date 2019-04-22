@@ -18,17 +18,18 @@ library(raster)
 
 ### Read the LAS file created in the last session
 ```{r}
-las.dir <- "E:\\las_data\\metadata_GHANA_LIDAR_All"
-las.file <- file.path(las.dir, "B2000097_1000m_clean.las")
+las.dir <- "G:\\Team Drives\\SERVIR Lidar Training\\data\\kenya\\las_files"
+las.file <- file.path(las.dir, "127500_9992500_1000m_clean.las")
 las <- readLAS(las.file)
 str(las)
 ```
 
 Now run the functions laspulse, lasflightline and lasscanline on your data and look at the structure again. We do this because these fields are not retained in the LAS 1.2 format.
+If you're using the Ghana test data, the edge of flightline flag is not set and you will need to comment out the "las <- lasscanline(las)" line.
 ```{r}
 las <- laspulse(las)
 las <- lasflightline(las)
-#las <- lasscanline(las)
+las <- lasscanline(las)
 str(las)
 ```
 
@@ -46,7 +47,7 @@ plot(density.grid, col=heat.colors(50))
 
 We can write the grid object to file for analysis and visualisation outside R (e.g. in QGIS). The command below can be edited to write a file to disk for any grid generated in this exercise.
 ```{r}
-grid.file <- file.path(las.dir, "B2000097_1000m_clean_density.tif")
+grid.file <- file.path(las.dir, "127500_9992500_1000m_clean_density.tif")
 writeRaster(density.grid, filename=grid.file, format="GTiff", overwrite=TRUE)
 ```
 
@@ -133,7 +134,7 @@ plot(pitfree.chm.grid, col=height.colors(50))
 ```
 
 ```{r}
-grid.file <- file.path(las.dir, "B2000097_1000m_clean_chm.tif")
+grid.file <- file.path(las.dir, "127500_9992500_1000m_clean_chm.tif")
 writeRaster(chm.grid, filename=grid.file, format="GTiff", overwrite=TRUE)
 ```
 
@@ -156,7 +157,7 @@ Here we will undertake the following steps using LAS data provided by the Ghana 
 3. Display the result
 
 ```{r}
-project.dir <- "D:\\ghana_las"
+project.dir <- "G:\\Team Drives\\SERVIR Lidar Training\\data\\ghana\\las_files"
 las.file <- file.path(project.dir)
 ctg <- catalog(las.file)
 lascheck(ctg)
@@ -278,7 +279,6 @@ The output rasters will be written to disk. The list of written files is returne
 opt_output_files(ctg_processed) <- file.path(project.dir, "chm", "{ORIGINALFILENAME}_chm")
 chm <- grid_metrics(ctg_processed, max(Z), res=1)
 plot(chm)
-#plot_dtm3d(chm)
 ```
 
 ```{r}

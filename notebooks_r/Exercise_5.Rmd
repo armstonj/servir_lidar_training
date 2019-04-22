@@ -13,7 +13,6 @@ This notebook focuses on mapping forest aboveground biomass with airborne lidar 
 As always, first we load the R packages that we need for the exercise.
 
 ```{r}
-library(randomForest)
 library(raster)
 ```
 
@@ -25,10 +24,10 @@ Next we will load the raster data. We have already created these over the Lope a
 The inputs are VRT files, just as we produced when generating height and cover products from ALS data in Exercise 2B.
 
 ```{r}
-file.dir <- "C:\\Users\\John\\hg\\servir_lidar_training\\servir_lidar_training_accra\\Exercise_5"
-rh100.file <- file.path(file.dir, "lvis_rasters", "ilvis2_ga2016_lope_rh100_snapped_r02500cm.vrt")
-rh25.file <- file.path(file.dir, "lvis_rasters", "ilvis2_ga2016_lope_rh25_snapped_r02500cm.vrt")
-cc.file <- file.path(file.dir, "lvis_rasters", "ilvis2_ga2016_lope_ccover_snapped_r02500cm.vrt")
+file.dir <- "G:\\Team Drives\\SERVIR Lidar Training\\data\\lvis"
+rh100.file <- file.path(file.dir, "ilvis2_ga2016_lope_rh100_snapped_r02500cm.vrt")
+rh25.file <- file.path(file.dir, "ilvis2_ga2016_lope_rh25_snapped_r02500cm.vrt")
+cc.file <- file.path(file.dir, "ilvis2_ga2016_lope_ccover_snapped_r02500cm.vrt")
 
 # Convert to carbon?
 carbon <- TRUE
@@ -51,7 +50,7 @@ predictor.stack.25m <- stack(rh100.grid,rh25.grid,cc.grid)
 ```
 
 
-# Single variable regression estimator for 1 ha
+# Regression estimator for 1 ha
 
 ## Reduce the spatial resolution from 25m to 100m
 
@@ -121,7 +120,7 @@ if (carbon) {
 ```
 
 
-# Multiple variable regression estimator for 0.25 ha
+# Regression estimator for 0.25 ha
 
 ## Reduce the spatial resolution of the predictor stack from 25m to 50m
 

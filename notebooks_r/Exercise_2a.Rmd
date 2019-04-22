@@ -1,6 +1,8 @@
 ---
 title: "R Notebook for SERVIR lidar training: Exercise 2A"
-output: github_document
+output:
+  pdf_document: default
+  html_notebook: default
 ---
 
 ## Load the required R packages
@@ -15,11 +17,11 @@ library(mapview)
 
 ## Read in and subset a LAS file
 
-The header stores the metadata. Change the path "las.dir" to where you have stored our example .las file on your local machine. 
+The header stores the metadata. Change the path "las.dir" to where you have stored our example .las file on your local machine. You can point to an individual LAS file from the examples Kenya or Ghana LAS files here, but we use the Kenya data for this example.
 
 ```{r}
-las.dir <- "E:\\las_data\\metadata_GHANA_LIDAR_All"
-las.file <- file.path(las.dir, "B2000097.las")
+las.dir <- "G:\\Team Drives\\SERVIR Lidar Training\\data\\kenya\\las_files"
+las.file <- file.path(las.dir, "127500_9992500.las")
 las <- readLAS(las.file)
 summary(las)
 ```
@@ -118,11 +120,11 @@ To see what these commands are doing, first look at the structure of your las ob
 str(las)
 ```
 
-Now run the functions laspulse, lasflightline and lasscanline on your data and look at the structure again.
+Now run the functions laspulse, lasflightline and lasscanline on your data and look at the structure again. If you're using the Ghana test data, the edge of flightline flag is not set and you will need to comment out the "las <- lasscanline(las)" line.
 ```{r}
 las <- laspulse(las)
 las <- lasflightline(las)
-#las <- lasscanline(las)
+las <- lasscanline(las)
 str(las)
 ```
 
@@ -137,9 +139,11 @@ plot(lasfilter(las, flightlineID ==2), color="Classification")
 
 The last thing we will cover in this exercise is reprojection. This is a familiar technique across remote sensing, but particularly interesting when lidar projects or flights span multiple EPSG codes. If we want to reproject the LAS data (e.g. for combining point clouds north and south of the equator), we can do so using the lastransform function.
 
-Here we transform the data from "Arc 1960 / UTM zone 37S"" to "WGS 84 / UTM zone 37S", a projection commonly used for satellite remote sensing products in this region.
+Here we transform the Kenya data from "Arc 1960 / UTM zone 37S"" to "WGS 84 / UTM zone 37S", a projection commonly used for satellite remote sensing products in this region.
+
+If you're using the Ghana data, then comment out the lines "new.epsg <- 32737" and "las.utmwgs84 <- lastransform(las, new.epsg)", and change "epsg(las) <- 21037" to "epsg(las) <- 32630".
 ```{r}
-epsg(las) <- 32630
+epsg(las) <- 21037
 new.epsg <- 32737
 las.utmwgs84 <- lastransform(las, new.epsg)
 summary(las.utmwgs84)
@@ -149,7 +153,7 @@ summary(las.utmwgs84)
 ## Save the cleaned LAS file
 We now want to save the cleaned and subsetted LAS fle for use in our next exercise.
 ```{r}
-output.las.file <- file.path(las.dir, "B2000097_1000m_clean.las")
+output.las.file <- file.path(las.dir, "127500_9992500_1000m_clean.las")
 writeLAS(las, output.las.file)
 ```
 

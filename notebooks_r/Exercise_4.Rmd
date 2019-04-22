@@ -30,7 +30,7 @@ library(randomForest)
 
 Next we will load the data. We have already spatially aggregated the field data, extracted the coincident ALS (NASA LVIS) data.
 ```{r}
-file.dir <- "C:\\Users\\John\\hg\\servir_lidar_training\\servir_lidar_training_accra\\Exercise_4"
+file.dir <- "G:\\Team Drives\\SERVIR Lidar Training\\data\\lvis"
 csv.file <- file.path(file.dir, "afrisar_trainingdata_servir.csv")
 
 data <- read.csv(csv.file)
@@ -72,7 +72,7 @@ for (q in  c(0.25,0.5,0.75,1.0)) {
   segments(0.05, cover.profile[ii,"height"], cover.profile.tmp[ii], cover.profile[ii,"height"], col="red")
   text(0.05, cover.profile[ii,"height"]+2, sprintf("RH%i",q*100), col="red", cex=0.75, adj=0)
 }
-#names(cover.profile)
+names(cover.profile)
 ```
 
 
